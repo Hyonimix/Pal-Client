@@ -3,27 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pal Client</title>
-  <link rel="stylesheet" href="../public/styles/main.css" />
+  <title>Pal Client (Single File)</title>
   <style>
-    /* Keep the original client utility cards while adding playable GUI board UX. */
     body { font-family: sans-serif; margin: 0; background: #111; color: #eee; }
-    main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; }
     .card { background: #1d1d1d; border: 1px solid #333; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
     .card h3 { margin: 0 0 10px; }
     button, input { min-height: 36px; padding: 8px 10px; border-radius: 8px; border: 1px solid #555; background: #222; color: #eee; box-sizing: border-box; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
     .row:last-child { margin-bottom: 0; }
     pre { white-space: pre-wrap; word-break: break-word; background: #000; padding: 10px; border-radius: 8px; max-height: 250px; overflow: auto; }
-    /* Client app keeps only GUI interaction; terminal/debug panels are intentionally hidden. */
-    #terminalPanel, #finalReview, #peekBtn, #aiThoughtBtn, #learnBtn, #exportPalBtn, #importPalBtn, #mergePalBtn, #viewPalDbBtn, #spectateBtn, #selfSpectateBtn, #tinyDlEnabled, #tinyDlAutoTrain, #tinyDlProfile, #selfMatchLoopEnabled { display:none !important; }
-    #guiPanel.hidden { display:block !important; }
-    .app-shell { margin-top: 12px; }
   </style>
 </head>
 <body>
 <main>
   <h1>Pal Client</h1>
+  <!-- Grouped server/session and match actions into one card to simplify the primary workflow. -->
   <div class="card">
     <h3>세션 및 대국 관리</h3>
     <div class="row">
@@ -34,6 +29,7 @@
     </div>
   </div>
 
+  <!-- Split Pal data controls by row to improve visual scanning and reduce UI density. -->
   <div class="card">
     <h3>Pal 데이터 관리</h3>
     <div class="row">
@@ -50,137 +46,10 @@
     </div>
   </div>
 
-  <!-- Reuse the proven debug-board DOM contract so the shared runtime can operate without null-target risks. -->
-  <div id="app" class="app-shell">
-
-    <div id="fileProtocolWarning" class="file-warning hidden" role="alert"></div>
-
-      <header class="topbar">
-        <div class="topbar-main">
-          <h1 data-i18n="app.title">Pal Board</h1>
-          <div class="primary-controls">
-            <label>
-              <span data-i18n="menu.game">Game</span>
-              <select id="gameSelect">
-                <option value="gomoku" data-i18n="games.gomoku">Gomoku</option>
-                <option value="reversi" data-i18n="games.reversi">Reversi</option>
-                <option value="chess" data-i18n="games.chess" selected>Chess</option>
-                <option value="go" data-i18n="games.go">Go</option>
-              </select>
-            </label>
-            <label>
-              <span data-i18n="menu.difficulty">AI Difficulty</span>
-              <select id="difficultySelect">
-                <option value="beginner" data-i18n="difficulty.beginner">Beginner</option>
-                <option value="intermediate" data-i18n="difficulty.intermediate">Intermediate</option>
-                <option value="expert" data-i18n="difficulty.expert">Expert</option>
-                <option value="pal" data-i18n="difficulty.pal" selected>Pal (Learning)</option>
-              </select>
-            </label>
-            <button id="startBtn" class="btn-primary" data-i18n="menu.start">Start</button>
-            <button id="guiModeBtn" type="button" data-i18n="ui.guiModeOff">GUI Mode</button>
-          </div>
-        </div>
-        <div class="secondary-controls">
-          <details class="dropdown-menu">
-            <summary class="dropdown-trigger" data-i18n="menu.tools">Tools &amp; DB</summary>
-            <div class="dropdown-content">
-              <button id="aiThoughtBtn" type="button" data-i18n="ui.aiThoughtTitle">AI 사고과정</button>
-              <button id="learnBtn" type="button" data-i18n="menu.learn" disabled>Learn</button>
-              <hr class="menu-divider" />
-              <button id="exportPalBtn" data-i18n="menu.exportPal">Export My Pal</button>
-              <button id="importPalBtn" data-i18n="menu.importPal">Import Pal</button>
-              <button id="mergePalBtn" data-i18n="menu.mergePal">Merge Pal</button>
-              <hr class="menu-divider" />
-              <button id="viewPalDbBtn" data-i18n="menu.viewPalDb">View Pal DB</button>
-              <button id="spectateBtn" data-i18n="menu.spectate">Pal vs External Pal</button>
-              <button id="selfSpectateBtn" data-i18n="menu.selfSpectate">Pal Self Match</button>
-              <label><input id="selfMatchLoopEnabled" type="checkbox" /> <span data-i18n="ui.selfMatchLoopToggle">Loop self-match after learning idle</span></label>
-              <label><input id="tinyDlEnabled" type="checkbox" /> Tiny DL re-ranker</label>
-              <label><input id="tinyDlAutoTrain" type="checkbox" /> Auto-train Tiny DL</label>
-              <span id="tinyDlProfile" class="profile-text">Desktop Intel iGPU profile</span>
-            </div>
-          </details>
-          <label>
-            <span data-i18n="menu.language">Language</span>
-            <select id="languageSelect"><option value="ko">한국어</option><option value="en">English</option></select>
-          </label>
-          <button id="peekBtn" data-i18n="menu.peek">Peek Board</button>
-          <input id="palFileInput" type="file" accept="application/json" class="hidden" />
-        </div>
-      </header>
-      <div class="main-content">
-        <section id="guiPanel" class="gui-panel" aria-live="polite">
-          <div class="gui-head">
-            <h2 data-i18n="ui.guiBoardTitle">GUI Board</h2>
-            <div id="guiStatus" class="gui-status" data-i18n="ui.guiIdle">GUI off</div>
-          </div>
-          <div id="guiBoardContainer" class="svg-container gui-board-container"></div>
-        </section>
-
-        <section id="terminalPanel" class="terminal-panel" aria-live="polite">
-          <div id="logArea" class="log-area"></div>
-          <form id="commandForm" class="command-form">
-            <span class="prompt">&gt;</span>
-            <input id="commandInput" type="text" autocomplete="off" data-i18n-placeholder="input.placeholder" placeholder="Enter command" />
-            <button type="submit" data-i18n="input.send">Send</button>
-          </form>
-        </section>
-
-        <section id="finalReview" class="final-review hidden">
-          <h2 data-i18n="review.title">Post-Game Review</h2>
-          <p id="finalMessage"></p>
-          <div id="svgContainer" class="svg-container"></div>
-        </section>
-      </div>
-
-      <div id="peekModal" class="peek-modal hidden" role="dialog" aria-modal="true" aria-labelledby="peekTitle">
-        <div class="peek-modal-content">
-          <div class="peek-modal-head">
-            <h2 id="peekTitle" data-i18n="peek.title">Quick Board Peek</h2>
-            <button id="peekCloseBtn" type="button" class="peek-close" data-i18n="peek.close">Close</button>
-          </div>
-          <p data-i18n="peek.autoClose">This preview closes automatically in a few seconds.</p>
-          <div id="peekSvgContainer" class="svg-container"></div>
-        </div>
-      </div>
-
-      <div id="aiThoughtModal" class="peek-modal hidden" role="dialog" aria-modal="true" aria-labelledby="aiThoughtTitle">
-        <div class="peek-modal-content">
-          <div class="peek-modal-head">
-            <h2 id="aiThoughtTitle" data-i18n="ui.aiThoughtTitle">AI 사고과정</h2>
-            <button id="aiThoughtCloseBtn" type="button" class="peek-close" data-i18n="peek.close">Close</button>
-          </div>
-          <div id="aiThoughtContent" class="log-area"></div>
-        </div>
-      </div>
-
-      <div id="palDbModal" class="peek-modal hidden" role="dialog" aria-modal="true" aria-labelledby="palDbTitle">
-        <div class="peek-modal-content">
-          <div class="peek-modal-head">
-            <h2 id="palDbTitle" data-i18n="ui.palDbTitle">Pal 학습 DB</h2>
-            <button id="palDbCloseBtn" type="button" class="peek-close" data-i18n="peek.close">Close</button>
-          </div>
-          <pre id="palDbContent" class="log-area"></pre>
-        </div>
-      </div>
-    </div>
   <div class="card"><pre id="log"></pre></div>
 </main>
 
-    <script>
-      (function () {
-        // Keep parity with the debug board: warn when opened via file:// to avoid CORS confusion.
-        if (location.protocol !== 'file:') return;
-        const warning = document.getElementById('fileProtocolWarning');
-        if (!warning) return;
-        warning.classList.remove('hidden');
-        warning.textContent = 'This app cannot run via file:// due to browser CORS rules. Start a local server and open this page via http://localhost.';
-      })();
-    </script>
-<script type="module" src="../public/scripts/main.js"></script>
 <script>
-
 (() => {
   // Keep the server endpoint fixed in code to prevent accidental UI-side edits.
   const PRIMARY_SERVER_URL = 'https://server.van-denevola.ts.net:10000';
