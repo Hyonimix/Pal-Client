@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pal Client (Single File)</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #111; color: #eee; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; }
+    .card { background: #1d1d1d; border: 1px solid #333; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+    .card h3 { margin: 0 0 10px; }
+    button, input { min-height: 36px; padding: 8px 10px; border-radius: 8px; border: 1px solid #555; background: #222; color: #eee; box-sizing: border-box; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .row:last-child { margin-bottom: 0; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #000; padding: 10px; border-radius: 8px; max-height: 250px; overflow: auto; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Pal Client</h1>
+  <!-- Grouped server/session and match actions into one card to simplify the primary workflow. -->
+  <div class="card">
+    <h3>세션 및 대국 관리</h3>
+    <div class="row">
+      <button id="connectBtn">Handshake</button>
+      <button id="fetchWorkbookBtn">문제집 수신</button>
+      <button id="matchEndBtn">대국 종료(학습 트리거)</button>
+      <button id="downloadLogBtn">대국 로그 다운로드</button>
+    </div>
+  </div>
+
+  <!-- Split Pal data controls by row to improve visual scanning and reduce UI density. -->
+  <div class="card">
+    <h3>Pal 데이터 관리</h3>
+    <div class="row">
+      <input id="pin" type="password" placeholder="PIN" />
+      <button id="exportBtn">내보내기(PIN)</button>
+    </div>
+    <div class="row">
+      <input id="importFile" type="file" />
+      <button id="importBtn">불러오기(PIN)</button>
+    </div>
+    <div class="row">
+      <input id="externalPalFile" type="file" />
+      <button id="loadExternalPalBtn">외부 Pal 대전용 로드(무PIN)</button>
+    </div>
+  </div>
+
+  <div class="card"><pre id="log"></pre></div>
+</main>
+
+<script>
+(() => {
+  // Keep the server endpoint fixed in code to prevent accidental UI-side edits.
+  const PRIMARY_SERVER_URL = 'https://server.van-denevola.ts.net:10000';
+  const FALLBACK_SERVER_URL = 'http://127.0.0.1:5500';
+  const FALLBACK_SERVER_URL_HTTPS = 'https://127.0.0.1:5500';
+  const SHARED_SALT = 'SHOGAPAL0890';
+  const CLIENT_ID = 'forClient-single-html';
+  const PBKDF2_ITERATIONS = 250000;
+  // Keep IV length explicit and centralized for AES-GCM operations so both
+  // encrypt/decrypt paths stay aligned if parameters evolve later.
+  const AES_GCM_IV_LENGTH = 12;
+  // Keep the algorithm identifier centralized so crypto calls stay consistent
+  // across encrypt/decrypt operations and future parameter updates are safer.
+  const AES_GCM_ALGORITHM = 'AES-GCM';
+  const state = { sessionId: null, lastWorkbook: null, learningDb: { version: 1, samples: [] }, logs: [] };
+  // Cache frequently accessed DOM elements once to avoid repeated queries
+  // in event handlers and keep wiring consistent in this single-file app.
+  const el = {
+    log: document.getElementById('log'),
+    pin: document.getElementById('pin'),
+    importFile: document.getElementById('importFile'),
+    externalPalFile: document.getElementById('externalPalFile'),
+    connectBtn: document.getElementById('connectBtn'),
+    fetchWorkbookBtn: document.getElementById('fetchWorkbookBtn'),
+    matchEndBtn: document.getElementById('matchEndBtn'),
+    downloadLogBtn: document.getElementById('downloadLogBtn'),
+    exportBtn: document.getElementById('exportBtn'),
+    importBtn: document.getElementById('importBtn'),
+    loadExternalPalBtn: document.getElementById('loadExternalPalBtn')
+  };
+  const log = (msg) => { state.logs.push(`[${new Date().toISOString()}] ${msg}`); el.log.textContent = state.logs.join('\n'); };
+
+  // Map server error codes to user-friendly messages to
+  // consistently explain security/authentication failure reasons to users.
+  const errorMap = {
+    'invalid session': '세션이 만료되었거나 유효하지 않습니다.',
+    'unverified session': '인증되지 않은 세션입니다.',
+    'verification failed': '검증에 실패했습니다. (Replay 시도 혹은 잘못된 서명)',
+    'decrypt failed': '데이터 복호화에 실패했습니다.',
+    refused: '서버에서 요청을 거부했습니다.',
+    TOO_MANY_REQUESTS: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.'
+  };
+
+  function translateError(errorMsg) {
+    return errorMap[errorMsg] || errorMsg;
+  }
+
+  // Centralized download helper to avoid duplicated object URL lifecycle code
+  // across log export and Pal export paths. This keeps behavior identical while
+  // reducing maintenance risk when download handling needs updates.
+  function downloadBlob(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function sha256(text) {
+    const bytes = new TextEncoder().encode(text);
+    const hash = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  
+  // Shared PIN guard used by import/export so validation semantics remain
+  // consistent in both flows and errors are surfaced through the same path.
+  function requirePin(pin) {
+    if (!pin) throw new Error('PIN 입력 필요');
+    return pin;
+  }
+
+  async function hmacSha256Hex(secret, message) {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+    return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function deriveAesKey(pin) {
+    const keyMat = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: new TextEncoder().encode(SHARED_SALT), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      keyMat,
+      { name: AES_GCM_ALGORITHM, length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function encryptJson(pin, obj) {
+    const key = await deriveAesKey(pin);
+    const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_LENGTH));
+    const plain = new TextEncoder().encode(JSON.stringify(obj));
+    const cipher = await crypto.subtle.encrypt({ name: AES_GCM_ALGORITHM, iv }, key, plain);
+    return { iv: btoa(String.fromCharCode(...iv)), data: btoa(String.fromCharCode(...new Uint8Array(cipher))) };
+  }
+
+  async function decryptJson(pin, blob) {
+    const key = await deriveAesKey(pin);
+    const iv = Uint8Array.from(atob(blob.iv), c => c.charCodeAt(0));
+    const data = Uint8Array.from(atob(blob.data), c => c.charCodeAt(0));
+    const plain = await crypto.subtle.decrypt({ name: AES_GCM_ALGORITHM, iv }, key, data);
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  // Parse responses defensively: fetch can succeed with non-JSON payloads in
+  // error cases, so we normalize that into a controlled client error.
+  async function parseJsonResponse(resp) {
+    const text = await resp.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error('invalid json response');
+    }
+  }
+
+  // Attempt request against the primary host first and only fall back to the
+  // local launcher host when the primary endpoint is unreachable at network level.
+  async function api(path, body) {
+    const requestOptions = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-pal-client-salt': SHARED_SALT },
+      body: JSON.stringify(body)
+    };
+
+    async function send(base) {
+      const resp = await fetch(`${base}${path}`, requestOptions);
+      const data = await parseJsonResponse(resp);
+      if (!resp.ok) throw new Error(translateError(data?.error ?? `http ${resp.status}`));
+      return data;
+    }
+
+    try {
+      return await send(PRIMARY_SERVER_URL);
+    } catch (error) {
+      // Keep fallback narrow: only recover from connectivity failures.
+      // This intentionally avoids masking valid HTTP/application errors from
+      // the primary host and preserves existing error visibility semantics.
+      const isConnectivityFailure = error instanceof TypeError;
+      if (!isConnectivityFailure) throw error;
+
+      // Avoid mixed-content blocking when the client is served over HTTPS.
+      // In HTTPS contexts, try HTTPS localhost first, then HTTP localhost.
+      const fallbackCandidates = location.protocol === 'https:'
+        ? [FALLBACK_SERVER_URL_HTTPS, FALLBACK_SERVER_URL]
+        : [FALLBACK_SERVER_URL];
+
+      for (const fallbackBase of fallbackCandidates) {
+        try {
+          log(`기본 서버 접속 실패, 로컬 서버로 재시도: ${fallbackBase}`);
+          return await send(fallbackBase);
+        } catch (fallbackError) {
+          if (!(fallbackError instanceof TypeError)) throw fallbackError;
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  el.connectBtn.onclick = async () => {
+    try {
+      const data = await api('/auth/handshake', { clientId: CLIENT_ID });
+      const proof = await hmacSha256Hex(SHARED_SALT, data.challenge);
+      await api('/auth/verify', { sessionId: data.sessionId, proof });
+      state.sessionId = data.sessionId;
+      log(`Handshake+검증 완료: ${data.sessionId}`);
+    } catch (error) {
+      log(`Handshake 실패: ${error.message}`);
+    }
+  };
+
+  el.fetchWorkbookBtn.onclick = async () => {
+    try {
+      if (!state.sessionId) return log('먼저 Handshake 필요');
+      const data = await api('/workbook/encrypted', { sessionId: state.sessionId });
+      state.lastWorkbook = data.workbook;
+      log('암호화 문제집 수신 완료');
+    } catch (error) {
+      log(`문제집 수신 실패: ${error.message}`);
+    }
+  };
+
+  el.matchEndBtn.onclick = async () => {
+    // Policy lock: client build keeps learning always-on; user-disable is treated as misuse and is not supported.
+    state.learningDb.samples.push({ endedAt: new Date().toISOString(), note: 'match end learned' });
+    log(`학습 진행: 샘플 수 ${state.learningDb.samples.length}`);
+  };
+
+  el.downloadLogBtn.onclick = () => {
+    const blob = new Blob([state.logs.join('\n')], { type: 'text/plain;charset=utf-8' });
+    downloadBlob(blob, `pal-game-log-${Date.now()}.txt`);
+    log('로그 다운로드 완료');
+  };
+
+  el.exportBtn.onclick = async () => {
+    try {
+      const pin = requirePin(el.pin.value);
+      const encrypted = await encryptJson(pin, state.learningDb);
+      const payload = { type: 'pal-export', formatVersion: 1, kdf: 'PBKDF2', iterations: PBKDF2_ITERATIONS, cipher: AES_GCM_ALGORITHM, ivLength: AES_GCM_IV_LENGTH, encrypted, createdAt: new Date().toISOString() };
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      downloadBlob(blob, `pal-export-${Date.now()}.pal`);
+      log('PIN 기반 내보내기 완료 (v1)');
+    } catch (error) {
+      log(`내보내기 실패: ${error.message}`);
+    }
+  };
+
+  el.importBtn.onclick = async () => {
+    try {
+      const file = el.importFile.files[0];
+      const pin = requirePin(el.pin.value);
+      if (!file) return log('파일 필요');
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      if (payload.formatVersion !== undefined && payload.formatVersion !== 1) {
+        return log(`지원하지 않는 포맷 버전입니다. (v${payload.formatVersion})`);
+      }
+
+      if (!payload?.encrypted?.iv || !payload?.encrypted?.data) {
+        return log('잘못된 Pal 파일 형식');
+      }
+      state.learningDb = await decryptJson(pin, payload.encrypted);
+      log(`불러오기 성공: samples=${state.learningDb.samples.length}`);
+    } catch (error) {
+      log(`불러오기 실패: ${error.message}`);
+    }
+  };
+
+  el.loadExternalPalBtn.onclick = async () => {
+    const file = el.externalPalFile.files[0];
+    if (!file) return log('외부 Pal 파일 선택 필요');
+    const text = await file.text();
+    try {
+      const payload = JSON.parse(text);
+      if (payload.policy && payload.policy !== 'match-only') {
+        return log('외부 Pal 정책 거부: 대전 전용(match-only) 파일이 아닙니다.');
+      }
+      if (!payload.signature) {
+        return log('외부 Pal 서명 거부: 무결성 증명 서명이 누락되었습니다.');
+      }
+      // TODO: Request a short-TTL verification token from the server (requires API support)
+    } catch {
+      log('외부 Pal 메타파싱 실패 또는 구조화되지 않은 Legacy 포맷');
+    }
+
+    const opaque = await sha256(text);
+    log(`외부 Pal 로드(무PIN, 대전용 핸들): ${opaque.slice(0, 16)}...`);
+  };
+})();
+</script>
+</body>
+</html>
