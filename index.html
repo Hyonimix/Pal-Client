@@ -3,22 +3,29 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pal Client (Single File)</title>
+  <title>Pal Client</title>
+  <link rel="stylesheet" href="../public/styles/main.css" />
   <style>
+    /* Keep the original client utility cards while adding playable GUI board UX. */
     body { font-family: sans-serif; margin: 0; background: #111; color: #eee; }
-    main { max-width: 900px; margin: 0 auto; padding: 16px; }
+    main { max-width: 1200px; margin: 0 auto; padding: 16px; }
     .card { background: #1d1d1d; border: 1px solid #333; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
     .card h3 { margin: 0 0 10px; }
     button, input { min-height: 36px; padding: 8px 10px; border-radius: 8px; border: 1px solid #555; background: #222; color: #eee; box-sizing: border-box; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
     .row:last-child { margin-bottom: 0; }
     pre { white-space: pre-wrap; word-break: break-word; background: #000; padding: 10px; border-radius: 8px; max-height: 250px; overflow: auto; }
+    /* Client app keeps only GUI interaction; terminal/debug panels are intentionally hidden. */
+    #terminalPanel, #finalReview, #peekBtn, #aiThoughtBtn, #learnBtn, #exportPalBtn, #importPalBtn, #mergePalBtn, #viewPalDbBtn, #spectateBtn, #selfSpectateBtn, #tinyDlEnabled, #tinyDlAutoTrain, #tinyDlProfile, #selfMatchLoopEnabled { display:none !important; }
+    #guiPanel.hidden { display:block !important; }
+    .app-shell { margin-top: 12px; }
+    /* Provide a local fallback for visibility toggles when shared CSS fails to load. */
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
 <main>
   <h1>Pal Client</h1>
-  <!-- Grouped server/session and match actions into one card to simplify the primary workflow. -->
   <div class="card">
     <h3>세션 및 대국 관리</h3>
     <div class="row">
@@ -29,7 +36,6 @@
     </div>
   </div>
 
-  <!-- Split Pal data controls by row to improve visual scanning and reduce UI density. -->
   <div class="card">
     <h3>Pal 데이터 관리</h3>
     <div class="row">
@@ -46,10 +52,44 @@
     </div>
   </div>
 
+  <!-- Keep client HTML minimal: shared board DOM is loaded dynamically from public/index.html to avoid hardcoding duplicated markup. -->
+  <div id="boardAppMount" class="app-shell" aria-live="polite"></div>
+
   <div class="card"><pre id="log"></pre></div>
 </main>
 
+    <script>
+      (async function () {
+        // Load the shared board shell from the real public entry to prevent duplicated hardcoded markup in forClient.
+        const mount = document.getElementById('boardAppMount');
+        if (!mount) return;
+
+        // Show file:// warning early because dynamic fetch cannot work under that protocol due to CORS restrictions.
+        if (location.protocol === 'file:') {
+          mount.innerHTML = '<div class="card"><h3>Runtime Notice</h3><p>This app cannot run via file:// due to browser CORS rules. Start a local server and open this page via http://localhost.</p></div>';
+          return;
+        }
+
+        try {
+          const resp = await fetch('../public/index.html', { cache: 'no-cache' });
+          const html = await resp.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const app = doc.getElementById('app');
+          if (!app) throw new Error('missing #app in shared entry');
+          // Import the app shell node so shared runtime IDs/events bind exactly once in the current document.
+          mount.appendChild(document.importNode(app, true));
+          const moduleScript = document.createElement('script');
+          moduleScript.type = 'module';
+          moduleScript.src = '../public/scripts/main.js';
+          document.body.appendChild(moduleScript);
+        } catch (error) {
+          // Keep failure explicit and local so client utility controls remain usable even if board shell load fails.
+          mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p></div>`;
+        }
+      })();
+    </script>
 <script>
+
 (() => {
   // Keep the server endpoint fixed in code to prevent accidental UI-side edits.
   const PRIMARY_SERVER_URL = 'https://server.van-denevola.ts.net:10000';
