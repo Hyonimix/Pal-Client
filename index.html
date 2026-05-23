@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pal Client</title>
-  <link rel="stylesheet" href="../public/styles/main.css" />
   <style>
     /* Keep the original client utility cards while adding playable GUI board UX. */
     body { font-family: sans-serif; margin: 0; background: #111; color: #eee; }
@@ -60,9 +59,35 @@
 
     <script>
       (async function () {
+        // Load all non-index assets from remote servers because this deployment contains only a single index file.
+        const REMOTE_BASES = [
+          'https://server.van-denevola.ts.net:10000',
+          'https://127.0.0.1:5500',
+          'http://127.0.0.1:5500'
+        ];
         // Load the shared board shell from the real public entry to prevent duplicated hardcoded markup in forClient.
         const mount = document.getElementById('boardAppMount');
         if (!mount) return;
+
+        async function ensureRemoteStylesheet() {
+          // Inject stylesheet from remote bases and verify load success before stopping.
+          // This avoids false-positive success where a broken URL is appended but never resolves.
+          for (const base of REMOTE_BASES) {
+            const href = `${base}/public/styles/main.css`;
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = href;
+            const loaded = await new Promise((resolve) => {
+              link.onload = () => resolve(true);
+              link.onerror = () => resolve(false);
+              document.head.appendChild(link);
+            });
+            if (loaded) return;
+            // Remove failed candidate to keep DOM clean and allow deterministic retries.
+            link.remove();
+          }
+        }
+        await ensureRemoteStylesheet();
 
         // Show file:// warning early because dynamic fetch cannot work under that protocol due to CORS restrictions.
         if (location.protocol === 'file:') {
@@ -78,7 +103,7 @@
           const frame = document.createElement('iframe');
           frame.title = 'Pal Board';
           // Mirror the same multi-root strategy used by fetch candidates to avoid path-coupled iframe failures.
-          const iframeCandidates = ['../public/index.html', '/public/index.html'];
+          const iframeCandidates = REMOTE_BASES.map((base) => `${base}/public/index.html`);
           frame.src = iframeCandidates[0];
           frame.style.width = '100%';
           frame.style.minHeight = '860px';
@@ -93,9 +118,8 @@
         }
 
         try {
-          // Try multiple canonical entry URLs because some static servers map `../public/index.html`
-          // differently (or rewrite it) which can return a document without the expected `#app` root.
-          const candidateEntries = ['../public/index.html', '/public/index.html'];
+          // Try remote server bases because this deployment contains only index.html and all other assets are server-hosted.
+          const candidateEntries = REMOTE_BASES.map((base) => `${base}/public/index.html`);
           let loadedAppNode = null;
           for (const entryUrl of candidateEntries) {
             const resp = await fetch(entryUrl, { cache: 'no-cache' });
@@ -116,7 +140,7 @@
           mount.appendChild(document.importNode(loadedAppNode, true));
           // Resolve runtime module with retry fallback instead of relying on pathname heuristics.
           // This avoids brittle assumptions when static hosts rewrite URL bases.
-          const scriptCandidates = ['../public/scripts/main.js', '/public/scripts/main.js'];
+          const scriptCandidates = REMOTE_BASES.map((base) => `${base}/public/scripts/main.js`);
           let scriptLoaded = false;
           for (const scriptUrl of scriptCandidates) {
             // Append one candidate at a time and wait for load/error to keep behavior deterministic.
