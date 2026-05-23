@@ -65,6 +65,10 @@
           'https://127.0.0.1:5500',
           'http://127.0.0.1:5500'
         ];
+        // Keep localhost HTTP fallback available, but note HTTPS pages may block HTTP loads by mixed-content policy.
+        const REMOTE_BASES_ORDERED = location.protocol === 'https:'
+          ? REMOTE_BASES
+          : ['http://127.0.0.1:5500', 'https://127.0.0.1:5500', 'https://server.van-denevola.ts.net:10000'];
         // Load the shared board shell from the real public entry to prevent duplicated hardcoded markup in forClient.
         const mount = document.getElementById('boardAppMount');
         if (!mount) return;
@@ -72,7 +76,7 @@
         async function ensureRemoteStylesheet() {
           // Inject stylesheet from remote bases and verify load success before stopping.
           // This avoids false-positive success where a broken URL is appended but never resolves.
-          for (const base of REMOTE_BASES) {
+          for (const base of REMOTE_BASES_ORDERED) {
             const href = `${base}/public/styles/main.css`;
             const link = document.createElement('link');
             link.rel = 'stylesheet';
@@ -103,23 +107,26 @@
           const frame = document.createElement('iframe');
           frame.title = 'Pal Board';
           // Mirror the same multi-root strategy used by fetch candidates to avoid path-coupled iframe failures.
-          const iframeCandidates = REMOTE_BASES.map((base) => `${base}/public/index.html`);
+          const iframeCandidates = REMOTE_BASES_ORDERED.map((base) => `${base}/public/index.html`);
           frame.src = iframeCandidates[0];
           frame.style.width = '100%';
           frame.style.minHeight = '860px';
           frame.style.border = '0';
           frame.style.borderRadius = '10px';
           frame.loading = 'eager';
+          // Retry across every candidate endpoint instead of a single-step fallback.
+          let iframeAttempt = 0;
           frame.addEventListener('error', () => {
-            // Retry once with absolute-root candidate when relative path embedding fails.
-            frame.src = iframeCandidates[1];
-          }, { once: true });
+            iframeAttempt += 1;
+            if (iframeAttempt >= iframeCandidates.length) return;
+            frame.src = iframeCandidates[iframeAttempt];
+          });
           mount.appendChild(frame);
         }
 
         try {
           // Try remote server bases because this deployment contains only index.html and all other assets are server-hosted.
-          const candidateEntries = REMOTE_BASES.map((base) => `${base}/public/index.html`);
+          const candidateEntries = REMOTE_BASES_ORDERED.map((base) => `${base}/public/index.html`);
           let loadedAppNode = null;
           for (const entryUrl of candidateEntries) {
             const resp = await fetch(entryUrl, { cache: 'no-cache' });
@@ -140,7 +147,7 @@
           mount.appendChild(document.importNode(loadedAppNode, true));
           // Resolve runtime module with retry fallback instead of relying on pathname heuristics.
           // This avoids brittle assumptions when static hosts rewrite URL bases.
-          const scriptCandidates = REMOTE_BASES.map((base) => `${base}/public/scripts/main.js`);
+          const scriptCandidates = REMOTE_BASES_ORDERED.map((base) => `${base}/public/scripts/main.js`);
           let scriptLoaded = false;
           for (const scriptUrl of scriptCandidates) {
             // Append one candidate at a time and wait for load/error to keep behavior deterministic.
@@ -166,7 +173,7 @@
             mountBoardIframe();
             return;
           } catch (_) {
-            mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p></div>`;
+            mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p><p>Tip: On HTTPS pages, browser mixed-content policy may block HTTP localhost fallback (http://127.0.0.1:5500).</p></div>`;
           }
         }
       })();
