@@ -71,17 +71,46 @@
         }
 
         try {
-          const resp = await fetch('../public/index.html', { cache: 'no-cache' });
-          const html = await resp.text();
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          const app = doc.getElementById('app');
-          if (!app) throw new Error('missing #app in shared entry');
+          // Try multiple canonical entry URLs because some static servers map `../public/index.html`
+          // differently (or rewrite it) which can return a document without the expected `#app` root.
+          const candidateEntries = ['../public/index.html', '/public/index.html'];
+          let loadedAppNode = null;
+          for (const entryUrl of candidateEntries) {
+            const resp = await fetch(entryUrl, { cache: 'no-cache' });
+            if (!resp.ok) continue;
+            const html = await resp.text();
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const candidateApp = doc.getElementById('app');
+            if (candidateApp) {
+              loadedAppNode = candidateApp;
+              break;
+            }
+          }
+          if (!loadedAppNode) throw new Error('missing #app in shared entry');
           // Import the app shell node so shared runtime IDs/events bind exactly once in the current document.
-          mount.appendChild(document.importNode(app, true));
-          const moduleScript = document.createElement('script');
-          moduleScript.type = 'module';
-          moduleScript.src = '../public/scripts/main.js';
-          document.body.appendChild(moduleScript);
+          mount.appendChild(document.importNode(loadedAppNode, true));
+          // Resolve runtime module with retry fallback instead of relying on pathname heuristics.
+          // This avoids brittle assumptions when static hosts rewrite URL bases.
+          const scriptCandidates = ['../public/scripts/main.js', '/public/scripts/main.js'];
+          let scriptLoaded = false;
+          for (const scriptUrl of scriptCandidates) {
+            // Append one candidate at a time and wait for load/error to keep behavior deterministic.
+            const moduleScript = document.createElement('script');
+            moduleScript.type = 'module';
+            moduleScript.src = scriptUrl;
+            const loaded = await new Promise((resolve) => {
+              moduleScript.onload = () => resolve(true);
+              moduleScript.onerror = () => resolve(false);
+              document.body.appendChild(moduleScript);
+            });
+            if (loaded) {
+              scriptLoaded = true;
+              break;
+            }
+            // Remove failed candidate so it does not clutter DOM or trigger duplicate retries.
+            moduleScript.remove();
+          }
+          if (!scriptLoaded) throw new Error('failed to load shared runtime module');
         } catch (error) {
           // Keep failure explicit and local so client utility controls remain usable even if board shell load fails.
           mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p></div>`;
