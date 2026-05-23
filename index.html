@@ -65,9 +65,11 @@
           'https://127.0.0.1:5500',
           'http://127.0.0.1:5500'
         ];
+        const FALLBACK_SERVER_URL = 'http://127.0.0.1:5500';
+        const FALLBACK_SERVER_URL_HTTPS = 'https://127.0.0.1:5500';
         // Keep localhost HTTP fallback available, but note HTTPS pages may block HTTP loads by mixed-content policy.
         const REMOTE_BASES_ORDERED = location.protocol === 'https:'
-          ? REMOTE_BASES
+          ? ['https://127.0.0.1:5500', 'https://server.van-denevola.ts.net:10000', 'http://127.0.0.1:5500']
           : ['http://127.0.0.1:5500', 'https://127.0.0.1:5500', 'https://server.van-denevola.ts.net:10000'];
         // Load the shared board shell from the real public entry to prevent duplicated hardcoded markup in forClient.
         const mount = document.getElementById('boardAppMount');
@@ -100,28 +102,34 @@
         }
 
 
-        function mountBoardIframe() {
-          // Final fallback: embed the canonical board entry in an iframe when DOM import cannot find `#app`.
-          // This keeps GUI play available without re-hardcoding board markup in forClient.
-          mount.innerHTML = '';
-          const frame = document.createElement('iframe');
-          frame.title = 'Pal Board';
-          // Mirror the same multi-root strategy used by fetch candidates to avoid path-coupled iframe failures.
-          const iframeCandidates = REMOTE_BASES_ORDERED.map((base) => `${base}/public/index.html`);
-          frame.src = iframeCandidates[0];
-          frame.style.width = '100%';
-          frame.style.minHeight = '860px';
-          frame.style.border = '0';
-          frame.style.borderRadius = '10px';
-          frame.loading = 'eager';
-          // Retry across every candidate endpoint instead of a single-step fallback.
-          let iframeAttempt = 0;
-          frame.addEventListener('error', () => {
-            iframeAttempt += 1;
-            if (iframeAttempt >= iframeCandidates.length) return;
-            frame.src = iframeCandidates[iframeAttempt];
-          });
-          mount.appendChild(frame);
+        async function mountBoardIframe() {
+          // Final fallback: probe candidates first, then mount iframe only with a reachable endpoint.
+          // This avoids trapping users on browser-generated DNS error pages inside the iframe.
+          // Keep iframe fallback localhost-focused to avoid showing external DNS/browser error pages in client UI.
+          const iframeCandidates = [
+            `${FALLBACK_SERVER_URL_HTTPS}/public/index.html`,
+            `${FALLBACK_SERVER_URL}/public/index.html`
+          ];
+          for (const candidate of iframeCandidates) {
+            try {
+              const probe = await fetch(candidate, { method: 'GET', cache: 'no-cache' });
+              if (!probe.ok) continue;
+              mount.innerHTML = '';
+              const frame = document.createElement('iframe');
+              frame.title = 'Pal Board';
+              frame.src = candidate;
+              frame.style.width = '100%';
+              frame.style.minHeight = '860px';
+              frame.style.border = '0';
+              frame.style.borderRadius = '10px';
+              frame.loading = 'eager';
+              mount.appendChild(frame);
+              return true;
+            } catch (_) {
+              // Continue to the next candidate when probe fails.
+            }
+          }
+          return false;
         }
 
         try {
@@ -140,8 +148,8 @@
             }
           }
           if (!loadedAppNode) {
-            mountBoardIframe();
-            return;
+            if (await mountBoardIframe()) return;
+            throw new Error('shared app node not reachable from fallback endpoints');
           }
           // Import the app shell node so shared runtime IDs/events bind exactly once in the current document.
           mount.appendChild(document.importNode(loadedAppNode, true));
@@ -170,11 +178,11 @@
         } catch (error) {
           // Keep failure explicit and local so client utility controls remain usable even if board shell load fails.
           try {
-            mountBoardIframe();
-            return;
+            if (await mountBoardIframe()) return;
           } catch (_) {
-            mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p><p>Tip: On HTTPS pages, browser mixed-content policy may block HTTP localhost fallback (http://127.0.0.1:5500).</p></div>`;
+            // Ignore iframe fallback throw and show terminal failure guidance below.
           }
+          mount.innerHTML = `<div class="card"><h3>Board Load Failed</h3><p>${String(error.message || error)}</p><p>Fallback note: localhost fallback works only when browser security policy allows the selected protocol.</p></div>`;
         }
       })();
     </script>
